@@ -45,15 +45,16 @@ func main() {
 		var p scan.Progress
 		id := fsevents.Now()
 		start := time.Now()
-		n, err := scan.Scan(context.Background(), root, &p)
+		t, err := scan.Scan(context.Background(), root, &p)
 		check(err)
+		n := t.Root
 		elapsed := time.Since(start)
 		runtime.GC()
 		var ms runtime.MemStats
 		runtime.ReadMemStats(&ms)
 		fmt.Printf("%v  files=%d size=%d errors=%d heap=%dMB\n", elapsed.Round(time.Millisecond), n.Files(), n.Size(), p.Errors.Load(), ms.HeapAlloc>>20)
 		if *save != "" {
-			saveTree(*save, n, id)
+			saveTree(*save, t, id)
 		}
 	}
 }
@@ -62,9 +63,10 @@ func runUpdate(file string) {
 	start := time.Now()
 	f, err := os.Open(file)
 	check(err)
-	n, since, err := scan.Load(f)
+	tree, since, err := scan.Load(f)
 	f.Close()
 	check(err)
+	n := tree.Root
 	fmt.Printf("load     %v  files=%d size=%d\n", time.Since(start).Round(time.Millisecond), n.Files(), n.Size())
 
 	t := time.Now()
@@ -75,17 +77,17 @@ func runUpdate(file string) {
 
 	t = time.Now()
 	var p scan.Progress
-	check(scan.Rescan(context.Background(), n, changes, &p))
+	check(scan.Rescan(context.Background(), tree, changes, &p))
 	fmt.Printf("rescan   %v  files=%d size=%d relisted-files=%d\n", time.Since(t).Round(time.Millisecond), n.Files(), n.Size(), p.Files.Load())
 	fmt.Printf("total    %v\n", time.Since(start).Round(time.Millisecond))
-	saveTree(file, n, id)
+	saveTree(file, tree, id)
 }
 
-func saveTree(file string, n *scan.Node, id uint64) {
+func saveTree(file string, t *scan.Tree, id uint64) {
 	start := time.Now()
 	f, err := os.Create(file)
 	check(err)
-	check(scan.Save(f, n, id))
+	check(scan.Save(f, t, id))
 	check(f.Close())
 	st, _ := os.Stat(file)
 	fmt.Printf("save     %v  %dMB\n", time.Since(start).Round(time.Millisecond), st.Size()>>20)

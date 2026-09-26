@@ -28,23 +28,23 @@ func hasCache(root string) bool {
 	return err == nil
 }
 
-func loadCache(root string) (*scan.Node, uint64, error) {
+func loadCache(root string) (*scan.Tree, uint64, error) {
 	f, err := os.Open(cachePath(root))
 	if err != nil {
 		return nil, 0, err
 	}
 	defer f.Close()
-	n, stamp, err := scan.Load(f)
-	if err == nil && n.Name != root {
+	t, stamp, err := scan.Load(f)
+	if err == nil && t.Root.Name != root {
 		err = os.ErrNotExist // hash collision
 	}
-	return n, stamp, err
+	return t, stamp, err
 }
 
 // saveCache writes to a temp file and renames it, so readers never see a
 // partial tree. Failures only cost a full scan next time, so they're ignored.
-func saveCache(n *scan.Node, stamp uint64) {
-	path := cachePath(n.Name)
+func saveCache(t *scan.Tree, stamp uint64) {
+	path := cachePath(t.Root.Name)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return
 	}
@@ -52,7 +52,7 @@ func saveCache(n *scan.Node, stamp uint64) {
 	if err != nil {
 		return
 	}
-	err = scan.Save(f, n, stamp)
+	err = scan.Save(f, t, stamp)
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}

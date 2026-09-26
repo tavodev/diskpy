@@ -74,6 +74,24 @@ func (n *Node) Path() string {
 	return filepath.Join(n.Parent.Path(), n.Name)
 }
 
+// Tree is a scanned directory tree plus what keeping it up to date needs.
+// Its methods must not be called while a scan or rescan is updating it.
+type Tree struct {
+	Root  *Node
+	links *links
+}
+
+// Remove takes n, which must not be the root, out of the tree, e.g. after it
+// was deleted. Data still reachable through a hard link elsewhere stays counted.
+func (t *Tree) Remove(n *Node) {
+	parent := n.Parent
+	children := slices.DeleteFunc(slices.Clone(parent.Children()), func(c *Node) bool { return c == n })
+	parent.children.Store(&children)
+	parent.addUp(-n.Size(), -int64(n.Files()))
+	t.links.drop(n)
+	t.links.settle()
+}
+
 // Progress holds live counters, safe to read concurrently while a scan runs.
 type Progress struct {
 	Root   atomic.Pointer[Node] // set as soon as the scan starts
@@ -108,13 +126,12 @@ type scanner struct {
 	stack   []job
 	pending int // queued + in progress
 
-	inodesMu sync.Mutex
-	inodes   map[uint64]struct{} // hard-linked files already counted
+	links *links
 }
 
 // Scan walks root without following symlinks or crossing filesystem
 // boundaries. The partial tree is available from p.Root while it runs.
-func Scan(ctx context.Context, root string, p *Progress) (*Node, error) {
+func Scan(ctx context.Context, root string, p *Progress) (*Tree, error) {
 	root, err := filepath.Abs(root)
 	if err != nil {
 		return nil, err
@@ -130,24 +147,26 @@ func Scan(ctx context.Context, root string, p *Progress) (*Node, error) {
 		n.files.Store(1)
 	}
 	p.Root.Store(n)
+	t := &Tree{Root: n, links: newLinks()}
 	if !n.IsDir {
-		return n, nil
+		return t, nil
 	}
 
-	s := newScanner(ctx, p, uint64(st.Dev))
-	s.run([]job{{n, strings.TrimSuffix(root, "/")}})
+	s := newScanner(ctx, p, uint64(st.Dev), t.links)
+	s.run([]job{{n, root}})
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	return n, nil
+	t.links.settle()
+	return t, nil
 }
 
-func newScanner(ctx context.Context, p *Progress, dev uint64) *scanner {
+func newScanner(ctx context.Context, p *Progress, dev uint64, l *links) *scanner {
 	s := &scanner{
 		ctx:      ctx,
 		progress: p,
 		dev:      dev,
-		inodes:   make(map[uint64]struct{}),
+		links:    l,
 	}
 	s.cond = sync.NewCond(&s.mu)
 	return s
@@ -199,6 +218,15 @@ func (s *scanner) work() {
 	}
 }
 
+// childPath joins a directory path and an entry name. It is filepath.Join
+// without the cleaning, which the scanner doesn't need.
+func childPath(dir, name string) string {
+	if strings.HasSuffix(dir, "/") {
+		return dir + name
+	}
+	return dir + "/" + name
+}
+
 // list reads one directory, attaches its children and returns its
 // subdirectories. scratch is a reusable buffer, returned for the next call.
 func (s *scanner) list(j job, a *arena, scratch []*Node) ([]job, []*Node) {
@@ -212,14 +240,14 @@ func (s *scanner) list(j job, a *arena, scratch []*Node) ([]job, []*Node) {
 
 		if e.isDir {
 			if !e.mount { // another filesystem: leave it empty
-				subdirs = append(subdirs, job{child, j.path + "/" + child.Name})
+				subdirs = append(subdirs, job{child, childPath(j.path, child.Name)})
 			}
 			return
 		}
 		child.files.Store(1)
 		files++
-		if e.nlink > 1 && !s.firstSeen(e.ino) {
-			return // hard link already counted elsewhere
+		if e.nlink > 1 && !s.links.add(e.ino, e.size, child) {
+			return // hard link counted elsewhere
 		}
 		child.size.Store(e.size)
 		bytes += e.size
@@ -233,14 +261,4 @@ func (s *scanner) list(j job, a *arena, scratch []*Node) ([]job, []*Node) {
 	s.progress.Files.Add(files)
 	s.progress.Bytes.Add(bytes)
 	return subdirs, scratch
-}
-
-func (s *scanner) firstSeen(ino uint64) bool {
-	s.inodesMu.Lock()
-	defer s.inodesMu.Unlock()
-	if _, ok := s.inodes[ino]; ok {
-		return false
-	}
-	s.inodes[ino] = struct{}{}
-	return true
 }

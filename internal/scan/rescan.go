@@ -21,13 +21,14 @@ type Change struct {
 // changed directories; subdirectories that did not change keep their subtree.
 // The tree is updated in place and stays readable while this runs. If it is
 // cancelled, the tree is left partially updated and should be discarded.
-func Rescan(ctx context.Context, root *Node, changes []Change, p *Progress) error {
+func Rescan(ctx context.Context, t *Tree, changes []Change, p *Progress) error {
+	root := t.Root
 	info, err := os.Lstat(root.Name)
 	if err != nil {
 		return err
 	}
 	p.Root.Store(root)
-	s := newScanner(ctx, p, uint64(info.Sys().(*syscall.Stat_t).Dev))
+	s := newScanner(ctx, p, uint64(info.Sys().(*syscall.Stat_t).Dev), t.links)
 
 	var jobs []job
 	queued := map[*Node]bool{}   // will be scanned recursively
@@ -63,7 +64,7 @@ func Rescan(ctx context.Context, root *Node, changes []Change, p *Progress) erro
 		}
 		for _, r := range todo {
 			if r.recursive && !covered(r.node) && !relisted[r.node] {
-				r.node.reset()
+				s.reset(r.node)
 				queued[r.node] = true
 				jobs = append(jobs, job{r.node, r.node.Path()})
 			}
@@ -81,7 +82,11 @@ func Rescan(ctx context.Context, root *Node, changes []Change, p *Progress) erro
 		}
 	}
 	s.run(jobs)
-	return ctx.Err()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	t.links.settle()
+	return nil
 }
 
 // relistAll refreshes dirs concurrently and returns their new subdirectories.
@@ -164,7 +169,8 @@ func (n *Node) find(path string) (node *Node, exact bool) {
 }
 
 // reset empties a directory and removes its totals from its ancestors.
-func (n *Node) reset() {
+func (s *scanner) reset(n *Node) {
+	s.links.drop(n)
 	size, files := n.Size(), int64(n.Files())
 	n.children.Store(nil)
 	n.addUp(-size, -files)
@@ -177,6 +183,8 @@ func (s *scanner) relist(dir *Node, path string, a *arena) []job {
 	for _, c := range dir.Children() {
 		if c.IsDir {
 			old[c.Name] = c
+		} else {
+			s.links.drop(c) // files are always replaced
 		}
 	}
 
@@ -187,6 +195,7 @@ func (s *scanner) relist(dir *Node, path string, a *arena) []job {
 	err := s.readDir(path, func(e entry) {
 		if e.isDir {
 			if o, ok := old[string(e.name)]; ok {
+				delete(old, o.Name)
 				children = append(children, o)
 				keptBytes += o.Size()
 				keptFiles += int64(o.Files())
@@ -198,13 +207,13 @@ func (s *scanner) relist(dir *Node, path string, a *arena) []job {
 		children = append(children, child)
 		if e.isDir {
 			if !e.mount {
-				subdirs = append(subdirs, job{child, path + "/" + child.Name})
+				subdirs = append(subdirs, job{child, childPath(path, child.Name)})
 			}
 			return
 		}
 		child.files.Store(1)
 		files++
-		if e.nlink > 1 && !s.firstSeen(e.ino) {
+		if e.nlink > 1 && !s.links.add(e.ino, e.size, child) {
 			return
 		}
 		child.size.Store(e.size)
@@ -212,6 +221,9 @@ func (s *scanner) relist(dir *Node, path string, a *arena) []job {
 	})
 	if err != nil {
 		s.progress.Errors.Add(1)
+	}
+	for _, gone := range old {
+		s.links.drop(gone)
 	}
 
 	delta := bytes + keptBytes - dir.Size()

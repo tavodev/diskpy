@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleName</key>
+	<string>diskpy</string>
+	<key>CFBundleDisplayName</key>
+	<string>diskpy</string>
+	<key>CFBundleIdentifier</key>
+	<string>dev.tavo.diskpy</string>
+	<key>CFBundleExecutable</key>
+	<string>diskpy</string>
+	<key>CFBundleIconFile</key>
+	<string>icon</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>@VERSION@</string>
+	<key>CFBundleVersion</key>
+	<string>@VERSION@</string>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>es</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>12.0</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.utilities</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSDesktopFolderUsageDescription</key>
+	<string>diskpy mide cuánto espacio ocupa el Escritorio.</string>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>diskpy mide cuánto espacio ocupa la carpeta Documentos.</string>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>diskpy mide cuánto espacio ocupa la carpeta Descargas.</string>
+	<key>NSRemovableVolumesUsageDescription</key>
+	<string>diskpy mide cuánto espacio ocupan los discos externos que elijas.</string>
+	<key>NSNetworkVolumesUsageDescription</key>
+	<string>diskpy mide cuánto espacio ocupan los volúmenes de red que elijas.</string>
+</dict>
+</plist>

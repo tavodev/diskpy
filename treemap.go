@@ -15,9 +15,10 @@ import (
 
 const (
 	maxObjects   = 4000
-	headerHeight = 16
-	nestMinSide  = 48
 	labelSize    = 11
+	labelPad     = 3
+	headerHeight = labelSize + 2*labelPad + 2 // must fit a label, see fitLabel
+	nestMinSide  = 48
 )
 
 var palette = []color.NRGBA{
@@ -38,8 +39,9 @@ type hit struct {
 type Treemap struct {
 	widget.BaseWidget
 
-	OnOpen  func(*scan.Node) // a directory was clicked
-	OnHover func(*scan.Node) // nil when the pointer leaves
+	OnOpen  func(*scan.Node)                // a directory was clicked
+	OnHover func(*scan.Node)                // nil when the pointer leaves
+	OnMenu  func(*scan.Node, fyne.Position) // right click, at a canvas position
 
 	node *scan.Node
 	hits []hit // painted order: parents before their children
@@ -67,6 +69,12 @@ func (t *Treemap) Tapped(ev *fyne.PointEvent) {
 	}
 	if n != nil && n != t.node && t.OnOpen != nil {
 		t.OnOpen(n)
+	}
+}
+
+func (t *Treemap) TappedSecondary(ev *fyne.PointEvent) {
+	if n := t.nodeAt(ev.Position); n != nil && t.OnMenu != nil {
+		t.OnMenu(n, ev.AbsolutePosition)
 	}
 }
 
@@ -113,11 +121,12 @@ func (t *Treemap) build(size fyne.Size) []fyne.CanvasObject {
 		objs = append(objs, rect)
 		t.hits = append(t.hits, hit{r, n})
 	}
-	addLabel := func(r treemap.Rect, text string) {
-		if lbl := fitLabel(text, r); lbl != nil {
+	addLabel := func(r treemap.Rect, text string, style fyne.TextStyle) {
+		if lbl := fitLabel(text, r, style); lbl != nil {
 			objs = append(objs, lbl)
 		}
 	}
+	bold := fyne.TextStyle{Bold: true}
 
 	bounds := treemap.Rect{W: float64(size.Width), H: float64(size.Height)}
 	children := t.node.Sorted()
@@ -137,15 +146,15 @@ func (t *Treemap) build(size fyne.Size) []fyne.CanvasObject {
 
 		label := c.Name + "  " + humanSize(c.Size())
 		if !c.IsDir || r.W < nestMinSide || r.H < nestMinSide {
-			addLabel(r, label)
+			addLabel(r, label, bold)
 			continue
 		}
 		grand := c.Sorted()
 		if len(grand) == 0 {
-			addLabel(r, label)
+			addLabel(r, label, bold)
 			continue
 		}
-		addLabel(treemap.Rect{X: r.X, Y: r.Y, W: r.W, H: headerHeight}, label)
+		addLabel(treemap.Rect{X: r.X, Y: r.Y, W: r.W, H: headerHeight}, label, bold)
 		inner := treemap.Rect{X: r.X + 2, Y: r.Y + headerHeight, W: r.W - 4, H: r.H - headerHeight - 2}
 		for j, cr := range squarify(grand, inner) {
 			if len(objs) >= maxObjects {
@@ -160,7 +169,7 @@ func (t *Treemap) build(size fyne.Size) []fyne.CanvasObject {
 				fill = lighten(base, 0.6)
 			}
 			addRect(cr, fill, gc)
-			addLabel(cr, gc.Name)
+			addLabel(cr, gc.Name, fyne.TextStyle{})
 		}
 	}
 	return objs
@@ -176,14 +185,14 @@ func squarify(nodes []*scan.Node, r treemap.Rect) []treemap.Rect {
 
 // fitLabel returns a text object that fits inside r, or nil if none does.
 // The text is cut with an ellipsis, finding the longest prefix by binary search.
-func fitLabel(text string, r treemap.Rect) *canvas.Text {
-	const pad = 3
+func fitLabel(text string, r treemap.Rect, style fyne.TextStyle) *canvas.Text {
+	const pad = labelPad
 	if r.H < labelSize+2*pad || r.W < 30 {
 		return nil
 	}
 	avail := float32(r.W) - 2*pad
 	fits := func(s string) bool {
-		return fyne.MeasureText(s, labelSize, fyne.TextStyle{}).Width <= avail
+		return fyne.MeasureText(s, labelSize, style).Width <= avail
 	}
 	if !fits(text) {
 		runes := []rune(text)
@@ -203,6 +212,7 @@ func fitLabel(text string, r treemap.Rect) *canvas.Text {
 	}
 	lbl := canvas.NewText(text, color.NRGBA{0x10, 0x10, 0x10, 0xff})
 	lbl.TextSize = labelSize
+	lbl.TextStyle = style
 	lbl.Move(fyne.NewPos(float32(r.X)+pad, float32(r.Y)+1))
 	return lbl
 }

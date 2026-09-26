@@ -2,10 +2,13 @@ package main
 
 import (
 	"context"
+	_ "embed"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"slices"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -16,9 +19,16 @@ import (
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
+	"diskpy/internal/finder"
 	"diskpy/internal/fsevents"
 	"diskpy/internal/scan"
 )
+
+//go:embed packaging/Icon.png
+var icon []byte
+
+// lastRootKey is the preference holding the last folder scanned.
+const lastRootKey = "root"
 
 type ui struct {
 	win      fyne.Window
@@ -28,11 +38,12 @@ type ui struct {
 	total    int64        // current's size at the last refresh
 	cancel   context.CancelFunc
 	scanning bool
-	rootNode *scan.Node // last complete tree for root
+	rootNode *scan.Tree // last complete tree for root
 	stamp    uint64     // FSEvents id rootNode is current as of
 
 	pathLabel *widget.Label
 	status    *widget.Label
+	activity  *widget.ProgressBarInfinite // shown while scanning
 	list      *widget.List
 	back      *widget.Button
 	tree      *Treemap
@@ -41,17 +52,25 @@ type ui struct {
 
 func main() {
 	a := app.NewWithID("dev.tavo.diskpy")
+	a.SetIcon(fyne.NewStaticResource("Icon.png", icon))
 	w := a.NewWindow("diskpy")
 	w.Resize(fyne.NewSize(900, 650))
 
-	home, _ := os.UserHomeDir()
-	u := &ui{win: w, root: home}
+	root, _ := os.UserHomeDir()
+	if last := a.Preferences().String(lastRootKey); last != "" {
+		if _, err := os.Stat(last); err == nil {
+			root = last
+		}
+	}
+	u := &ui{win: w, root: root}
 	w.SetContent(u.build())
-	u.showPath()
-	if len(os.Args) > 1 {
+	// Finder used to pass -psn_… to apps it launched.
+	arg := len(os.Args) > 1 && !strings.HasPrefix(os.Args[1], "-psn")
+	if arg {
 		u.root = os.Args[1]
 	}
-	if len(os.Args) > 1 || hasCache(u.root) {
+	u.showPath()
+	if arg || hasCache(u.root) {
 		u.startScan()
 	}
 	w.ShowAndRun()
@@ -64,22 +83,28 @@ func (u *ui) build() fyne.CanvasObject {
 
 	u.back = widget.NewButtonWithIcon("", theme.NavigateBackIcon(), u.goUp)
 	u.back.Disable()
+	copyPath := widget.NewButtonWithIcon("", theme.ContentCopyIcon(), func() { u.copyPath(u.pathLabel.Text) })
+	disk := widget.NewButtonWithIcon("Disco", theme.StorageIcon(), func() { u.scanDir("/") })
 	pick := widget.NewButtonWithIcon("Carpeta", theme.FolderOpenIcon(), u.pickFolder)
 	run := widget.NewButtonWithIcon("Escanear", theme.ViewRefreshIcon(), u.startScan)
 	run.Importance = widget.HighImportance
 
-	u.list = widget.NewList(u.rowCount, newRow, u.updateRow)
-	u.list.OnSelected = u.open
+	u.list = widget.NewList(u.rowCount, func() fyne.CanvasObject { return newRow(u.open, u.showMenu) }, u.updateRow)
 
 	u.tree = NewTreemap()
 	u.tree.OnOpen = u.navigate
 	u.tree.OnHover = u.hover
+	u.tree.OnMenu = u.showMenu
 
 	split := container.NewHSplit(u.list, u.tree)
 	split.Offset = 0.35
 
-	top := container.NewBorder(nil, nil, u.back, container.NewHBox(pick, run), u.pathLabel)
-	return container.NewBorder(top, u.status, nil, nil, split)
+	top := container.NewBorder(nil, nil, u.back, container.NewHBox(copyPath, disk, pick, run), u.pathLabel)
+	u.activity = widget.NewProgressBarInfinite()
+	u.activity.Stop()
+	u.activity.Hide()
+	bottom := container.NewBorder(nil, nil, nil, container.NewCenter(container.NewGridWrap(fyne.NewSize(120, 6), u.activity)), u.status)
+	return container.NewBorder(top, bottom, nil, nil, split)
 }
 
 func (u *ui) showPath() {
@@ -95,9 +120,13 @@ func (u *ui) pickFolder() {
 		if err != nil || uri == nil {
 			return
 		}
-		u.root = uri.Path()
-		u.startScan()
+		u.scanDir(uri.Path())
 	}, u.win)
+}
+
+func (u *ui) scanDir(dir string) {
+	u.root = dir
+	u.startScan()
 }
 
 // maxChanges is how many changed directories an incremental update handles
@@ -120,16 +149,17 @@ func (u *ui) startScan() {
 		return
 	}
 	u.root = root
+	fyne.CurrentApp().Preferences().SetString(lastRootKey, root)
 
 	// A tree is owned by the run updating it; a cancelled run may still be
 	// touching its tree, so only a finished one is reused.
 	tree, stamp := u.rootNode, u.stamp
-	if tree == nil || tree.Name != root || u.scanning {
+	if tree == nil || tree.Root.Name != root || u.scanning {
 		tree = nil
 		u.clearView()
 	}
 	u.rootNode = nil
-	u.scanning = true
+	u.setScanning(true)
 	u.summary = ""
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -176,7 +206,7 @@ func (u *ui) startScan() {
 		var err error
 		if tree == nil {
 			if tree, stamp, err = loadCache(root); err == nil {
-				cached := tree
+				cached := tree.Root
 				fyne.Do(func() {
 					if ctx.Err() == nil {
 						u.navigate(cached)
@@ -215,7 +245,7 @@ func (u *ui) startScan() {
 		// Hand back scan garbage and any previous tree to the OS.
 		defer debug.FreeOSMemory()
 		fyne.Do(func() {
-			u.scanning = false
+			u.setScanning(false)
 			if err != nil {
 				u.status.SetText("Error: " + err.Error())
 				return
@@ -226,15 +256,26 @@ func (u *ui) startScan() {
 				how = fmt.Sprintf("actualizado en %.2fs (%d carpetas cambiadas)", elapsed.Seconds(), len(changes))
 			}
 			u.summary = fmt.Sprintf("%d archivos · %s · %s · %d sin acceso",
-				tree.Files(), humanSize(tree.Size()), how, p.Errors.Load())
+				tree.Root.Files(), humanSize(tree.Root.Size()), how, p.Errors.Load())
 			u.status.SetText(u.summary)
 			if u.current == nil {
-				u.navigate(tree)
+				u.navigate(tree.Root)
 			} else {
 				u.refreshView() // keep wherever the user browsed to
 			}
 		})
 	}()
+}
+
+func (u *ui) setScanning(on bool) {
+	u.scanning = on
+	if on {
+		u.activity.Show()
+		u.activity.Start()
+	} else {
+		u.activity.Stop()
+		u.activity.Hide()
+	}
 }
 
 func (u *ui) clearView() {
@@ -246,24 +287,27 @@ func (u *ui) clearView() {
 	u.showPath()
 }
 
-func (u *ui) open(id widget.ListItemID) {
-	u.list.UnselectAll()
-	n := u.items[id]
+func (u *ui) open(n *scan.Node) {
 	if !n.IsDir || (!u.scanning && len(n.Children()) == 0) {
 		return
 	}
 	u.navigate(n)
 }
 
+// goUp shows the parent folder. Above the scanned folder, it scans the parent.
 func (u *ui) goUp() {
-	if u.current != nil && u.current.Parent != nil {
+	switch {
+	case u.current == nil:
+	case u.current.Parent != nil:
 		u.navigate(u.current.Parent)
+	case u.current.Name != "/":
+		u.scanDir(filepath.Dir(u.current.Name))
 	}
 }
 
 func (u *ui) navigate(n *scan.Node) {
 	u.current = n
-	if n.Parent != nil {
+	if n.Parent != nil || n.Name != "/" {
 		u.back.Enable()
 	} else {
 		u.back.Disable()
@@ -289,11 +333,105 @@ func (u *ui) hover(n *scan.Node) {
 	u.status.SetText(fmt.Sprintf("%s · %s · %d archivos", n.Path(), humanSize(n.Size()), n.Files()))
 }
 
+// showMenu offers what can be done with n, at pos on the window's canvas.
+func (u *ui) showMenu(n *scan.Node, pos fyne.Position) {
+	path := n.Path()
+	report := func(err error) {
+		if err != nil {
+			dialog.ShowError(err, u.win)
+		}
+	}
+	reveal := fyne.NewMenuItem("Mostrar en Finder", func() { report(finder.Reveal(path)) })
+	reveal.Icon = theme.SearchIcon()
+	open := fyne.NewMenuItem("Abrir", func() { report(finder.Open(path)) })
+	open.Icon = theme.FileApplicationIcon()
+	copyPath := fyne.NewMenuItem("Copiar ruta", func() { u.copyPath(path) })
+	copyPath.Icon = theme.ContentCopyIcon()
+	trash := fyne.NewMenuItem("Mover a la Papelera…", func() { u.confirmTrash(n) })
+	trash.Icon = theme.DeleteIcon()
+	// While a scan runs the tree belongs to it; and the root has no parent to
+	// be removed from.
+	trash.Disabled = u.scanning || u.rootNode == nil || n.Parent == nil
+	menu := fyne.NewMenu("", reveal, open, copyPath, fyne.NewMenuItemSeparator(), trash)
+	widget.ShowPopUpMenuAtPosition(menu, u.win.Canvas(), pos)
+}
+
+func (u *ui) copyPath(path string) {
+	fyne.CurrentApp().Clipboard().SetContent(path)
+	u.status.SetText("Ruta copiada: " + path)
+}
+
+func (u *ui) confirmTrash(n *scan.Node) {
+	kind := "el archivo"
+	if n.IsDir {
+		kind = fmt.Sprintf("la carpeta (%d archivos)", n.Files())
+	}
+	msg := fmt.Sprintf("Se moverá %s «%s» a la Papelera.\nOcupa %s.", kind, n.Name, humanSize(n.Size()))
+	dialog.ShowConfirm("¿Mover a la Papelera?", msg, func(ok bool) {
+		if !ok {
+			return
+		}
+		tree := u.rootNode
+		if u.scanning || tree == nil || !inTree(n, tree) {
+			dialog.ShowInformation("No se movió nada", "El escaneo cambió mientras confirmabas. Inténtalo de nuevo cuando termine.", u.win)
+			return
+		}
+		if err := finder.Trash(n.Path()); err != nil {
+			dialog.ShowError(err, u.win)
+			return
+		}
+		size := n.Size()
+		tree.Remove(n)
+		u.refreshView()
+		u.summary = fmt.Sprintf("«%s» movido a la Papelera (%s) · total %s",
+			n.Name, humanSize(size), humanSize(tree.Root.Size()))
+		u.status.SetText(u.summary)
+	}, u.win)
+}
+
+// inTree reports whether n is still part of t.
+func inTree(n *scan.Node, t *scan.Tree) bool {
+	for n.Parent != nil {
+		if !slices.Contains(n.Parent.Children(), n) {
+			return false
+		}
+		n = n.Parent
+	}
+	return n == t.Root
+}
+
 func (u *ui) rowCount() int {
 	return len(u.items)
 }
 
-func newRow() fyne.CanvasObject {
+// row is a list entry that opens its node on click and offers a context menu
+// on right click. Being tappable itself, it receives both kinds of click, so
+// the list's own selection never sees them.
+type row struct {
+	widget.BaseWidget
+	content *fyne.Container
+	node    *scan.Node
+	onOpen  func(*scan.Node)
+	onMenu  func(*scan.Node, fyne.Position)
+}
+
+func (r *row) CreateRenderer() fyne.WidgetRenderer {
+	return widget.NewSimpleRenderer(r.content)
+}
+
+func (r *row) Tapped(*fyne.PointEvent) {
+	if r.node != nil {
+		r.onOpen(r.node)
+	}
+}
+
+func (r *row) TappedSecondary(ev *fyne.PointEvent) {
+	if r.node != nil {
+		r.onMenu(r.node, ev.AbsolutePosition)
+	}
+}
+
+func newRow(onOpen func(*scan.Node), onMenu func(*scan.Node, fyne.Position)) fyne.CanvasObject {
 	bar := widget.NewProgressBar()
 	bar.TextFormatter = func() string { return "" }
 	size := widget.NewLabel("")
@@ -301,15 +439,18 @@ func newRow() fyne.CanvasObject {
 	name := widget.NewLabel("")
 	name.Truncation = fyne.TextTruncateEllipsis
 	right := container.NewHBox(container.NewGridWrap(fyne.NewSize(90, 30), size), container.NewGridWrap(fyne.NewSize(140, 30), bar))
-	return container.NewBorder(nil, nil, widget.NewIcon(nil), right, name)
+	r := &row{content: container.NewBorder(nil, nil, widget.NewIcon(nil), right, name), onOpen: onOpen, onMenu: onMenu}
+	r.ExtendBaseWidget(r)
+	return r
 }
 
 func (u *ui) updateRow(id widget.ListItemID, o fyne.CanvasObject) {
 	n := u.items[id]
-	row := o.(*fyne.Container)
-	name := row.Objects[0].(*widget.Label)
-	icon := row.Objects[1].(*widget.Icon)
-	right := row.Objects[2].(*fyne.Container)
+	r := o.(*row)
+	r.node = n
+	name := r.content.Objects[0].(*widget.Label)
+	icon := r.content.Objects[1].(*widget.Icon)
+	right := r.content.Objects[2].(*fyne.Container)
 	size := right.Objects[0].(*fyne.Container).Objects[0].(*widget.Label)
 	bar := right.Objects[1].(*fyne.Container).Objects[0].(*widget.ProgressBar)
 

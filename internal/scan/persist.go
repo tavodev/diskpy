@@ -8,14 +8,23 @@ import (
 )
 
 // File layout: magic, 8-byte stamp, then nodes in pre-order. Each node is a
-// type byte, a uvarint-prefixed name, and then the allocated size for a file
-// or the child count for a directory. Directory totals are recomputed on load.
-const magic = "DSKP\x01"
+// kind byte, a uvarint-prefixed name, and then the allocated size for a file,
+// the size and inode for a hard-linked file, or the child count for a
+// directory. Directory totals are recomputed on load.
+const magic = "DSKP\x02"
+
+const (
+	kindFile = iota
+	kindDir
+	kindLink
+)
 
 var errCorrupt = errors.New("scan: corrupt tree file")
 
 // Save writes a finished tree to w, with an opaque stamp (e.g. an FSEvents id).
-func Save(w io.Writer, root *Node, stamp uint64) error {
+func Save(w io.Writer, t *Tree, stamp uint64) error {
+	t.links.mu.Lock()
+	defer t.links.mu.Unlock()
 	bw := bufio.NewWriterSize(w, 1<<20)
 	bw.WriteString(magic)
 	bw.Write(binary.LittleEndian.AppendUint64(nil, stamp))
@@ -23,16 +32,25 @@ func Save(w io.Writer, root *Node, stamp uint64) error {
 	var buf []byte
 	var write func(n *Node)
 	write = func(n *Node) {
-		buf = buf[:0]
-		if n.IsDir {
-			buf = append(buf, 1)
-		} else {
-			buf = append(buf, 0)
+		ino, linked := t.links.byNode[n]
+		kind := byte(kindFile)
+		switch {
+		case n.IsDir:
+			kind = kindDir
+		case linked:
+			kind = kindLink
 		}
+		buf = append(buf[:0], kind)
 		buf = binary.AppendUvarint(buf, uint64(len(n.Name)))
 		buf = append(buf, n.Name...)
-		if !n.IsDir {
+		switch kind {
+		case kindFile:
 			buf = binary.AppendUvarint(buf, uint64(n.Size()))
+			bw.Write(buf)
+			return
+		case kindLink:
+			buf = binary.AppendUvarint(buf, uint64(t.links.inodes[ino].size))
+			buf = binary.AppendUvarint(buf, ino)
 			bw.Write(buf)
 			return
 		}
@@ -43,12 +61,12 @@ func Save(w io.Writer, root *Node, stamp uint64) error {
 			write(c)
 		}
 	}
-	write(root)
+	write(t.Root)
 	return bw.Flush()
 }
 
 // Load reads a tree written by Save and returns it with its stamp.
-func Load(r io.Reader) (*Node, uint64, error) {
+func Load(r io.Reader) (*Tree, uint64, error) {
 	br := bufio.NewReaderSize(r, 1<<20)
 	head := make([]byte, len(magic)+8)
 	if _, err := io.ReadFull(br, head); err != nil {
@@ -60,11 +78,12 @@ func Load(r io.Reader) (*Node, uint64, error) {
 	stamp := binary.LittleEndian.Uint64(head[len(magic):])
 
 	var a arena
+	l := newLinks()
 	var name []byte
 	var read func(parent *Node) (*Node, error)
 	read = func(parent *Node) (*Node, error) {
 		kind, err := br.ReadByte()
-		if err != nil || kind > 1 {
+		if err != nil || kind > kindLink {
 			return nil, errCorrupt
 		}
 		nameLen, err := binary.ReadUvarint(br)
@@ -79,14 +98,25 @@ func Load(r io.Reader) (*Node, uint64, error) {
 			return nil, errCorrupt
 		}
 		n := a.node()
-		n.Name, n.Parent, n.IsDir = a.str(name), parent, kind == 1
+		n.Name, n.Parent, n.IsDir = a.str(name), parent, kind == kindDir
 
 		v, err := binary.ReadUvarint(br)
 		if err != nil {
 			return nil, errCorrupt
 		}
-		if !n.IsDir {
+		switch kind {
+		case kindFile:
 			n.size.Store(int64(v))
+			n.files.Store(1)
+			return n, nil
+		case kindLink:
+			ino, err := binary.ReadUvarint(br)
+			if err != nil {
+				return nil, errCorrupt
+			}
+			if l.add(ino, int64(v), n) {
+				n.size.Store(int64(v))
+			}
 			n.files.Store(1)
 			return n, nil
 		}
@@ -113,5 +143,8 @@ func Load(r io.Reader) (*Node, uint64, error) {
 		return n, nil
 	}
 	root, err := read(nil)
-	return root, stamp, err
+	if err != nil {
+		return nil, 0, err
+	}
+	return &Tree{Root: root, links: l}, stamp, nil
 }

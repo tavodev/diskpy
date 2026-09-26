@@ -1,3 +1,4 @@
 /diskpy
+/build/
 *.prof
 .DS_Store

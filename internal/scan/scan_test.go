@@ -31,10 +31,11 @@ func TestScan(t *testing.T) {
 	}
 
 	var p Progress
-	n, err := Scan(context.Background(), root, &p)
+	tree, err := Scan(context.Background(), root, &p)
 	if err != nil {
 		t.Fatal(err)
 	}
+	n := tree.Root
 
 	children := n.Sorted()
 	if got := children[0].Name; got != "big" {
@@ -107,6 +108,18 @@ func TestScanLiveReads(t *testing.T) {
 			}
 			return
 		default:
+		}
+	}
+}
+
+func TestChildPath(t *testing.T) {
+	for _, tc := range []struct{ dir, name, want string }{
+		{"/", "Users", "/Users"},
+		{"/Users", "me", "/Users/me"},
+		{"/Volumes/X/", "a", "/Volumes/X/a"},
+	} {
+		if got := childPath(tc.dir, tc.name); got != tc.want {
+			t.Errorf("childPath(%q, %q) = %q, want %q", tc.dir, tc.name, got, tc.want)
 		}
 	}
 }

@@ -27,7 +27,7 @@ func dump(n *Node) string {
 	return sb.String()
 }
 
-func mustScan(t *testing.T, root string) *Node {
+func mustScan(t *testing.T, root string) *Tree {
 	t.Helper()
 	n, err := Scan(context.Background(), root, &Progress{})
 	if err != nil {
@@ -90,7 +90,7 @@ func TestRescan(t *testing.T) {
 			if err := Rescan(context.Background(), tree, changes, &Progress{}); err != nil {
 				t.Fatal(err)
 			}
-			if got, want := dump(tree), dump(mustScan(t, root)); got != want {
+			if got, want := dump(tree.Root), dump(mustScan(t, root).Root); got != want {
 				t.Errorf("rescanned tree differs from a fresh scan\ngot:\n%s\nwant:\n%s", got, want)
 			}
 		})
@@ -110,10 +110,10 @@ func TestSaveLoad(t *testing.T) {
 	if stamp != 42 {
 		t.Errorf("stamp = %d, want 42", stamp)
 	}
-	if loaded.Name != tree.Name {
-		t.Errorf("root = %q, want %q", loaded.Name, tree.Name)
+	if loaded.Root.Name != tree.Root.Name {
+		t.Errorf("root = %q, want %q", loaded.Root.Name, tree.Root.Name)
 	}
-	if got, want := dump(loaded), dump(tree); got != want {
+	if got, want := dump(loaded.Root), dump(tree.Root); got != want {
 		t.Errorf("loaded tree differs\ngot:\n%s\nwant:\n%s", got, want)
 	}
 	if _, _, err := Load(bytes.NewReader(buf.Bytes()[:buf.Len()/2])); err == nil {
