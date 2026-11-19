@@ -21,7 +21,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>es</string>
 	<key>LSMinimumSystemVersion</key>
-	<string>12.0</string>
+	<string>@MIN_MACOS@</string>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.utilities</string>
 	<key>NSHighResolutionCapable</key>

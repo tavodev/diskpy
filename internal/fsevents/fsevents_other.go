@@ -6,7 +6,7 @@ import (
 	"errors"
 	"time"
 
-	"diskpy/internal/scan"
+	"github.com/tavodev/diskpy/internal/scan"
 )
 
 var ErrFullRescan = errors.New("fsevents: not supported, full rescan needed")

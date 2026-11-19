@@ -9,16 +9,21 @@ import (
 	"testing"
 	"time"
 
-	"diskpy/internal/scan"
+	"github.com/tavodev/diskpy/internal/scan"
 )
 
 func TestSince(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires the macOS FSEvents journal")
+	}
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	sub := filepath.Join(root, "sub")
-	os.Mkdir(sub, 0o755)
+	if err := os.Mkdir(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	time.Sleep(time.Second) // let fseventsd flush the setup events
 
 	id := Now()
@@ -42,7 +47,13 @@ func TestSince(t *testing.T) {
 }
 
 func TestSinceNothing(t *testing.T) {
-	root, _ := filepath.EvalSymlinks(t.TempDir())
+	if testing.Short() {
+		t.Skip("requires the macOS FSEvents journal")
+	}
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	changes, err := Since(root, Now(), 5*time.Second)
 	if err != nil {
 		t.Fatal(err)

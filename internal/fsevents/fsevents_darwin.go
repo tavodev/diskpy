@@ -47,6 +47,9 @@ static void noop(void *ctx) {}
 // 0 when the whole history was read, -1 on timeout, -2 if the stream failed.
 static int collect(const char *root, uint64_t since, double timeout, collector *c) {
 	CFStringRef path = CFStringCreateWithCString(NULL, root, kCFStringEncodingUTF8);
+	if (!path) {
+		return -2;
+	}
 	CFArrayRef paths = CFArrayCreate(NULL, (const void **)&path, 1, &kCFTypeArrayCallBacks);
 	FSEventStreamContext ctx = {0, c, NULL, NULL, NULL};
 	c->sem = dispatch_semaphore_create(0);
@@ -87,11 +90,11 @@ import "C"
 
 import (
 	"errors"
-	"strings"
+	"path/filepath"
 	"time"
 	"unsafe"
 
-	"diskpy/internal/scan"
+	"github.com/tavodev/diskpy/internal/scan"
 )
 
 // ErrFullRescan means the history can't be trusted and a full scan is needed.
@@ -121,7 +124,7 @@ func Since(root string, since uint64, timeout time.Duration) ([]scan.Change, err
 			return nil, ErrFullRescan
 		}
 		changes = append(changes, scan.Change{
-			Path:      strings.TrimSuffix(C.GoString(paths[i]), "/"),
+			Path:      filepath.Clean(C.GoString(paths[i])),
 			Recursive: f&C.kFSEventStreamEventFlagMustScanSubDirs != 0,
 		})
 	}

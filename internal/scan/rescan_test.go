@@ -119,4 +119,13 @@ func TestSaveLoad(t *testing.T) {
 	if _, _, err := Load(bytes.NewReader(buf.Bytes()[:buf.Len()/2])); err == nil {
 		t.Error("truncated file loaded without error")
 	}
+
+	tree.Root.Children()[0].Name = ""
+	buf.Reset()
+	if err := Save(&buf, tree, 42); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := Load(&buf); err == nil {
+		t.Error("tree with an unnamed entry loaded without error")
+	}
 }

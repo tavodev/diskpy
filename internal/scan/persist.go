@@ -5,6 +5,8 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"path/filepath"
+	"strings"
 )
 
 // File layout: magic, 8-byte stamp, then nodes in pre-order. Each node is a
@@ -97,8 +99,19 @@ func Load(r io.Reader) (*Tree, uint64, error) {
 		if _, err := io.ReadFull(br, name); err != nil {
 			return nil, errCorrupt
 		}
+		entryName := a.str(name)
+		if strings.ContainsRune(entryName, 0) {
+			return nil, errCorrupt
+		}
+		if parent == nil {
+			if !filepath.IsAbs(entryName) || filepath.Clean(entryName) != entryName {
+				return nil, errCorrupt
+			}
+		} else if !filepath.IsLocal(entryName) || entryName == "." || strings.ContainsRune(entryName, filepath.Separator) {
+			return nil, errCorrupt
+		}
 		n := a.node()
-		n.Name, n.Parent, n.IsDir = a.str(name), parent, kind == kindDir
+		n.Name, n.Parent, n.IsDir = entryName, parent, kind == kindDir
 
 		v, err := binary.ReadUvarint(br)
 		if err != nil {

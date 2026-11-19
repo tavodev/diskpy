@@ -9,8 +9,8 @@ import (
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
-	"diskpy/internal/scan"
-	"diskpy/internal/treemap"
+	"github.com/tavodev/diskpy/internal/scan"
+	"github.com/tavodev/diskpy/internal/treemap"
 )
 
 const (

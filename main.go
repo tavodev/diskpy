@@ -19,9 +19,9 @@ import (
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
-	"diskpy/internal/finder"
-	"diskpy/internal/fsevents"
-	"diskpy/internal/scan"
+	"github.com/tavodev/diskpy/internal/finder"
+	"github.com/tavodev/diskpy/internal/fsevents"
+	"github.com/tavodev/diskpy/internal/scan"
 )
 
 //go:embed packaging/Icon.png
@@ -71,7 +71,7 @@ func main() {
 	}
 	u.showPath()
 	if arg || hasCache(u.root) {
-		u.startScan()
+		u.startScan(u.root)
 	}
 	w.ShowAndRun()
 }
@@ -84,9 +84,9 @@ func (u *ui) build() fyne.CanvasObject {
 	u.back = widget.NewButtonWithIcon("", theme.NavigateBackIcon(), u.goUp)
 	u.back.Disable()
 	copyPath := widget.NewButtonWithIcon("", theme.ContentCopyIcon(), func() { u.copyPath(u.pathLabel.Text) })
-	disk := widget.NewButtonWithIcon("Disco", theme.StorageIcon(), func() { u.scanDir("/") })
+	disk := widget.NewButtonWithIcon("Disco", theme.StorageIcon(), func() { u.startScan("/") })
 	pick := widget.NewButtonWithIcon("Carpeta", theme.FolderOpenIcon(), u.pickFolder)
-	run := widget.NewButtonWithIcon("Escanear", theme.ViewRefreshIcon(), u.startScan)
+	run := widget.NewButtonWithIcon("Escanear", theme.ViewRefreshIcon(), func() { u.startScan(u.root) })
 	run.Importance = widget.HighImportance
 
 	u.list = widget.NewList(u.rowCount, func() fyne.CanvasObject { return newRow(u.open, u.showMenu) }, u.updateRow)
@@ -120,33 +120,28 @@ func (u *ui) pickFolder() {
 		if err != nil || uri == nil {
 			return
 		}
-		u.scanDir(uri.Path())
+		u.startScan(uri.Path())
 	}, u.win)
-}
-
-func (u *ui) scanDir(dir string) {
-	u.root = dir
-	u.startScan()
 }
 
 // maxChanges is how many changed directories an incremental update handles
 // before a full scan is likely faster.
 const maxChanges = 50_000
 
-// startScan shows the most recent tree for u.root at once, from memory or the
+// startScan shows the most recent tree for dir at once, from memory or the
 // on-disk cache, and brings it up to date with only the directories FSEvents
 // reports as changed. Without a usable tree or history it does a full scan.
-func (u *ui) startScan() {
-	if u.cancel != nil {
-		u.cancel()
-	}
-	root, err := filepath.EvalSymlinks(u.root) // FSEvents reports real paths
+func (u *ui) startScan(dir string) {
+	root, err := filepath.EvalSymlinks(dir) // FSEvents reports real paths
 	if err == nil {
 		root, err = filepath.Abs(root)
 	}
 	if err != nil {
 		u.status.SetText("Error: " + err.Error())
 		return
+	}
+	if u.cancel != nil {
+		u.cancel()
 	}
 	u.root = root
 	fyne.CurrentApp().Preferences().SetString(lastRootKey, root)
@@ -180,7 +175,7 @@ func (u *ui) startScan() {
 				return
 			case <-t.C:
 				fyne.Do(func() {
-					if ctx.Err() != nil {
+					if ctx.Err() != nil || !u.scanning {
 						return
 					}
 					u.status.SetText(fmt.Sprintf("%s… %d archivos · %s · %.1fs",
@@ -245,6 +240,9 @@ func (u *ui) startScan() {
 		// Hand back scan garbage and any previous tree to the OS.
 		defer debug.FreeOSMemory()
 		fyne.Do(func() {
+			if ctx.Err() != nil {
+				return
+			}
 			u.setScanning(false)
 			if err != nil {
 				u.status.SetText("Error: " + err.Error())
@@ -258,7 +256,7 @@ func (u *ui) startScan() {
 			u.summary = fmt.Sprintf("%d archivos · %s · %s · %d sin acceso",
 				tree.Root.Files(), humanSize(tree.Root.Size()), how, p.Errors.Load())
 			u.status.SetText(u.summary)
-			if u.current == nil {
+			if u.current == nil || !inTree(u.current, tree) {
 				u.navigate(tree.Root)
 			} else {
 				u.refreshView() // keep wherever the user browsed to
@@ -301,7 +299,7 @@ func (u *ui) goUp() {
 	case u.current.Parent != nil:
 		u.navigate(u.current.Parent)
 	case u.current.Name != "/":
-		u.scanDir(filepath.Dir(u.current.Name))
+		u.startScan(filepath.Dir(u.current.Name))
 	}
 }
 

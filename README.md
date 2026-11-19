@@ -1,42 +1,42 @@
 # diskpy
 
-Fast disk usage analyzer for macOS with a native GUI (Go + [Fyne](https://fyne.io)).
+diskpy is a macOS disk usage analyzer built with Go and [Fyne](https://fyne.io). It shows which files and folders take up space in an interactive treemap and a size-sorted list.
 
-- Parallel scanner built on `getattrlistbulk`: names, types and allocated sizes for many entries per syscall.
-- Squarified treemap plus a size-sorted list; click a folder to drill in.
-- Live results while scanning.
-- Right-click any entry to reveal it in Finder, open it, or move it to the Trash.
-- Hard links are counted once, and stay counted once across incremental updates.
-- Scans are cached in `~/Library/Caches/diskpy`; later runs show the cached tree instantly and re-read only the directories FSEvents reports as changed.
+- Browse results while the parallel scan runs.
+- Right-click an entry to show it in Finder, open it, copy its path, or move it to the Trash after confirming.
+- Reload previous results from a local cache. When the macOS FSEvents journal is available, diskpy refreshes the directories that changed.
 
-## Build and run
+## Build from source
 
-Requires Go and the Xcode command line tools (cgo).
+Requirements are macOS 13 Ventura or later, [Go 1.27.4](https://go.dev/dl/) or later, and the Xcode command line tools (`xcode-select --install`).
 
 ```sh
-make app            # build/diskpy.app, ad-hoc signed; `make run` also opens it
-go build -o diskpy . && ./diskpy [dir]   # or run unbundled; scans dir
+git clone https://github.com/tavodev/diskpy.git
+cd diskpy
+make app
+open build/diskpy.app
 ```
 
-Run as the app so macOS asks for (and remembers) folder access for diskpy
-itself rather than for your terminal. For a complete scan of `$HOME`, grant it
-Full Disk Access in System Settings › Privacy & Security. The ad-hoc signature
-changes on every build, so macOS may ask again after rebuilding.
+`make app` builds an ad-hoc signed app for the current Mac. macOS may ask for folder access again after a rebuild. To start a scan of a specific directory from the terminal, use `open build/diskpy.app --args /path/to/folder` with diskpy closed.
+
+## Scan a disk or folder
+
+The interface is in Spanish. Choose **Carpeta** to scan a folder or a mounted volume, **Disco** to scan from `/`, and **Escanear** to refresh the selected location. Click a folder to drill down.
+
+diskpy measures allocated file bytes, counts hard-linked data once per scan, and skips symlinks when descending directories. A full scan stays on the selected filesystem. To include protected folders, grant diskpy Full Disk Access in **System Settings → Privacy & Security**. The status line shows how many entries or directories the scan could not read.
+
+Scan results, including file and directory names, are cached locally in `~/Library/Caches/diskpy`. To start fresh after changing disk access permissions, quit diskpy, delete that cache folder, and reopen the app.
 
 ## Development
 
 ```sh
-go test -race ./...
-go run ./cmd/bench [-n runs] [dir]          # time full scans without the GUI
-go run ./cmd/bench -save tree.bin [dir]     # full scan, then save
-go run ./cmd/bench -update tree.bin         # load and apply FSEvents changes
+make test                         # tests with Go's race detector
+make test-integration             # also exercises the macOS Trash and FSEvents journal
+go run ./cmd/bench -n 3 /path/to/folder
 ```
 
-## Layout
+The integration tests need access to the local Trash and FSEvents history. For bug reports, include your macOS version, CPU architecture and steps to reproduce. Remove private paths and file names before posting logs or screenshots.
 
-- `main.go`, `treemap.go`, `cache.go` — GUI, treemap widget, on-disk cache
-- `internal/scan` — parallel scanner, incremental rescan, tree persistence
-- `internal/fsevents` — FSEvents journal queries
-- `internal/finder` — reveal, open and trash files
-- `packaging` — `Info.plist` and icon for the app bundle
-- `internal/treemap` — squarified layout algorithm
+## License
+
+[MIT](LICENSE). Dependencies are available under their respective licenses.

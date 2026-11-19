@@ -15,8 +15,8 @@ import (
 	"runtime/pprof"
 	"time"
 
-	"diskpy/internal/fsevents"
-	"diskpy/internal/scan"
+	"github.com/tavodev/diskpy/internal/fsevents"
+	"github.com/tavodev/diskpy/internal/scan"
 )
 
 func main() {
